@@ -13,24 +13,24 @@ class ModelSegmentation(ABC):
     def __init__(
         self,
         model_path,
-        name
+        model_name
     ):
         self.model_path = model_path
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.name = name
+        self.model_name = model_name
 
-        # Initialize the model architecture based on parameters
-        self.model = self._create_model()
 
+    # Create the model architecture
     @abstractmethod
-    def _create_model(self):
+    def _create_model(self) -> torch.nn.Module | list[torch.nn.Module]:
+        """Create and return the model architecture."""
         pass
     
     @abstractmethod
     def load_model(self):
         pass
 
-
+    
     def minIOConnection(self, address, port, target, access_key, secret_key):
         """
         Returns a MinIO connector instance.
@@ -95,17 +95,29 @@ class ModelSegmentation(ABC):
 
         self.KafkaConnector.connect()
     
+    # This function will work with quixstreams. It should return a dictionary 
     @abstractmethod
-    def predict(self, X):
+    def predict(self, X) -> dict:
         pass
 
     def __str__(self):
-        return f"ModelSegmentation(name={self.name}, model_path={self.model_path}, device={self.device})"
+        return f"ModelSegmentation(name={self.model_name}, model_path={self.model_path}, device={self.device})"
     
     def start_streaming(self):
+        
+        if not hasattr(self, "KafkaConnector") or not self.KafkaConnector:
+            raise ValueError("KafkaConnector is not initialized. Please call kafkaConnection() first.")
+        if self.KafkaConnector.sdf_stream is None:
+            raise ValueError("KafkaConnector.sdf_stream is not initialized.")
+    
         self.KafkaConnector.sdf_stream = self.KafkaConnector.sdf_stream.apply(
             self.predict
         )
+        
+        # Check if the app is initialized
+        if self.KafkaConnector.app is None:
+            raise ValueError("KafkaConnector.app is not initialized.")
+        
         # Start the streaming application
         try:
             self.KafkaConnector.app.run()

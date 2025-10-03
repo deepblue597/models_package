@@ -6,7 +6,6 @@ import os
 import segmentation_models_pytorch as smp
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from db_connectors import MinIOConnector, TimescaleConnector, KafkaConnector
 from .abstract_model import ModelSegmentation
 
 class RiverSegmentationModel(ModelSegmentation):
@@ -37,7 +36,7 @@ class RiverSegmentationModel(ModelSegmentation):
 
     def __init__(
         self,
-        model_path="best_model.pth.tar",
+        model_path: str = "best_model.pth.tar",
         model_name="RiverSegmentationModel",
         input_size=(512, 512),
         mean=(0.485, 0.456, 0.406),
@@ -48,7 +47,7 @@ class RiverSegmentationModel(ModelSegmentation):
         encoder_name="efficientnet-b3",
         encoder_weights="imagenet",
     ):  
-        super().__init__(model_path=model_path, name=model_name)
+        super().__init__(model_path=model_path, model_name=model_name)
         self.input_size = input_size
         self.mean = mean
         self.std = std
@@ -58,9 +57,11 @@ class RiverSegmentationModel(ModelSegmentation):
         self.model_architecture = model_architecture
         self.encoder_name = encoder_name
         self.encoder_weights = encoder_weights
+        self.model = self._create_model()
 
         # Model is already created in parent class via _create_model()
 
+    # TODO: Check the return type
     def _create_model(self):
         """Create model based on architecture parameter"""
         if self.model_architecture.lower() == "unetplusplus":
@@ -99,6 +100,7 @@ class RiverSegmentationModel(ModelSegmentation):
     def load_model(self):
         if os.path.exists(self.model_path):
             checkpoint = torch.load(self.model_path, map_location=self.device)
+                
             self.model.load_state_dict(checkpoint["state_dict"])
 
             self.model.to(self.device)
@@ -259,7 +261,7 @@ class RiverSegmentationModel(ModelSegmentation):
 
     def __str__(self):
         return (f"RiverSegmentationModel("
-                f"name={self.name}, "
+                f"model_name={self.model_name}, "
                 f"model_path={self.model_path}, "
                 f"architecture={self.model_architecture}, "
                 f"encoder={self.encoder_name}, "

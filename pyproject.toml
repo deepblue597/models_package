@@ -1,10 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "models-package"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1.6"
+description = "A collection of segmentation models for water and river detection"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    {name = "Jason", email = "ikakandris@gmail.com"}
+]
+license = {text = "MIT"}
+keywords = ["segmentation", "pytorch", "water-detection", "river-detection", "satellite-imagery", "deep-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+
 dependencies = [
+    "torch>=1.9.0",
+    "torchvision>=0.10.0",
+    "numpy>=1.21.0",
+    "opencv-python>=4.5.0",
+    "rasterio>=1.2.0",
+    "segmentation-models-pytorch>=0.3.0",
+    "albumentations>=1.0.0",
+    "pydantic>=2.0.0",
+    "tifffile>=2021.0.0",
     "db-connectors>=0.1.0",
-    "pydantic>=2.11.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "black>=22.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
+
+
+
+[project.urls]
+Homepage = "https://github.com/deepblue597/models_package"
+Repository = "https://github.com/deepblue597/models_package.git"
+Issues = "https://github.com/deepblue597/models_package/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["models_package"]
+
+[dependency-groups]
+dev = [
+    "build>=1.3.0",
+    "twine>=6.2.0",
 ]

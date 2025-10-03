@@ -1,7 +1,8 @@
 import os
-from models.abstract_model import ModelSegmentation
+from .abstract_model import ModelSegmentation
 import numpy as np
 import rasterio
+from rasterio.transform import from_origin
 import math
 import torch
 import torch.nn as nn
@@ -10,25 +11,26 @@ import segmentation_models_pytorch as smp
 import torch.nn.functional as F
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-import warnings
-warnings.filterwarnings('ignore')
-from ..schemas import ImageStatistics
+from ..schemas.models import ImageStatistics
+import tifffile as tiff
+from rasterio.io import MemoryFile
 
 class WaterSegmentationModel(ModelSegmentation):
     def __init__(
         self,
-        model_path="models/best_model.pth",
-        name="WaterSegmentationModel",
+        model_path=None,
+        model_name="WaterSegmentationModel",
         model_indx= 0,
         ):
-        super().__init__(model_path=model_path, name=name)
+        super().__init__(model_path=model_path, model_name=model_name)
         if model_indx < 0 or model_indx > 2:
             raise ValueError(f'model_indx {model_indx} do not exist')
         self.model_indx = model_indx
-        self.final_model = self.model_list[self.model_indx]
+        self.models = self._create_model()
+        self.final_model = self.models[self.model_indx]
         
-        
-    def _create_model(self):
+    #TODO: Check return type    
+    def _create_model(self): 
         """ 
             Build a list of models.
         
@@ -77,6 +79,48 @@ class WaterSegmentationModel(ModelSegmentation):
         final_model_list.append(model_list)
         
         return final_model_list
+    #TODO: This may overlap with _create_model. Check and refactor if needed.
+    def load_model(self):
+        """
+        Load the trained model weights. This creates the actual PyTorch model
+        and loads the weights from the specified model path.
+        """
+        # Get model configuration
+        IMG_BANDS_INDX, NAME_IMG_BANDS_INDX, train_mean, train_std = self.final_model
+        
+        # Create model architecture
+        sample_channels = len(IMG_BANDS_INDX)
+        model = smp.Unet(
+            encoder_name="efficientnet-b0",
+            encoder_weights="imagenet",
+            in_channels=sample_channels,
+            classes=1,
+            activation=None, 
+        )
+        
+        # Add padding wrapper
+        PAD_SIZE = 16  
+        model = ReflectPadModel(model, pad=PAD_SIZE).to(self.device)
+        
+        # Load weights
+        if self.model_path is not None and os.path.exists(self.model_path):
+            model_file_path = self.model_path
+        else:
+            # Fallback to original naming convention when model_path is None or doesn't exist
+            model_file_path = f'{os.getcwd()}/model/s1s2_model_{NAME_IMG_BANDS_INDX}.pth'
+        
+        if not os.path.exists(model_file_path):
+            raise FileNotFoundError(f"Model file not found at: {model_file_path}")
+            
+        print(f"✓ Loading model from: {model_file_path}")
+        model.load_state_dict(torch.load(model_file_path, map_location=self.device))
+        model.eval()
+        
+        # Store the loaded model
+        self.pytorch_model = model
+        print(f"✓ {self.model_name} loaded successfully!")
+        
+
 
 
     
@@ -477,12 +521,12 @@ class WaterSegmentationModel(ModelSegmentation):
                 
         """
         # If it has input_path and it is not for prediction
-        if input_path != None and predicted_list == None:
+        if input_path is not None and predicted_list is None:
             bands = 0
             with rasterio.open(f'{input_path}_{counter}.tif') as src:
                 bands = src.count
     
-            if is_prediction == True:
+            if is_prediction:
                 bands = 1
                 full_img = np.zeros((H, W), dtype='float32')
             else:
@@ -532,26 +576,29 @@ class WaterSegmentationModel(ModelSegmentation):
                     new_final_col = col*full_h_w_tuple[j-1][1] + col_tile_size
 
                 # Makes the final image, depending if it is from a path, or from predicted list
-                if input_path != None:
+                if input_path is not None:
                     with rasterio.open(f'{input_path}_{j}.tif') as src:
-                        if is_prediction == True:
+                        if is_prediction:
                             tile = src.read(1)
                             full_img[new_row:new_final_row, new_col :new_final_col] = tile
                         else:
                             tile = src.read()
                             full_img[:, new_row:new_final_row, new_col :new_final_col] = tile
                 else:
-                    full_img[new_row:new_final_row, new_col :new_final_col] = predicted_list[j]
+                    if predicted_list is not None:
+                        full_img[new_row:new_final_row, new_col :new_final_col] = predicted_list[j]
                     
                 k += 1
     
             counter -= n_cols
 
-        if (output_path == None):
+        if (output_path is None):
             return full_img
             
         # Save the combined image
-        transform = rasterio.transform.from_origin(0, 0, 10, 10)  
+        transform = from_origin(0, 0, 10, 10)  # Example transform; adjust as needed
+        #TODO: change the transform to the correct one
+        #transform = rasterio.transform.from_origin(0, 0, 10, 10)  
         with rasterio.open(
             output_path,
             'w',
@@ -562,7 +609,7 @@ class WaterSegmentationModel(ModelSegmentation):
             dtype=full_img.dtype,
             transform=transform
         ) as dst:
-            if is_prediction == True:
+            if is_prediction:
                 dst.write(full_img, 1)
             else:
                 dst.write(full_img)
@@ -627,7 +674,7 @@ class WaterSegmentationModel(ModelSegmentation):
         """
         # Check for errors
         if s1_data is None or s2_data is None or slope_data is None:
-            raise ValueError(f's1_data or s2_data or slope_data are None')
+            raise ValueError('s1_data or s2_data or slope_data are None')
 
         # Original Height, Width [C, H, W]
         H, W = s1_data.shape[1], s1_data.shape[2]
@@ -682,29 +729,16 @@ class WaterSegmentationModel(ModelSegmentation):
         
         print(f"Test batches: {len(test_loader)}")
 
-        sample_img = test_dataset[0]
-        in_channels = sample_img.shape[0]
-        print(f'sample_img = {sample_img.shape}')
-        # Create model - EfficientNet-B0 as encoder 
-        model = smp.Unet(
-            encoder_name="efficientnet-b0",
-            encoder_weights="imagenet",
-            in_channels=in_channels,
-            classes=1,
-            activation=None, 
-        )
-
+        # Use the pre-loaded model if available, otherwise load it
+        if not hasattr(self, 'pytorch_model') or self.pytorch_model is None:
+            print("Model not loaded yet, loading now...")
+            self.load_model()
         
-        PAD_SIZE = 16  
-        model = ReflectPadModel(model, pad=PAD_SIZE).to(device)
-        print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-        
-        # Load model weights
-        # Specify the location device because the model was trained in GPU and now it might be used in CPU
-        model.load_state_dict(torch.load(f'{os.getcwd()}/model/s1s2_model_{NAME_IMG_BANDS_INDX}.pth', map_location=device))
+        model = self.pytorch_model
+        print(f"Using model with {sum(p.numel() for p in model.parameters())} parameters")
 
         # Returns all the predictions in the list, that are all (tile_size x tile_size)
-        prediction_list = self.save_binary_predictions(model, test_loader, device)
+        prediction_list = self.save_binary_predictions(model, test_loader, self.device)
 
         # Returns all the predictions but in their original size
         final_prediction_list = self.resize_to_normal_predictions(prediction_list, h_w_tuple)
@@ -815,80 +849,6 @@ class WaterSegmentationModel(ModelSegmentation):
         images = torch.stack(out, 0)  # [B,C,256,256]
         return images
 
-
-
-class ReflectPadModel(nn.Module):
-    """
-        Wraps a segmentation model so that inputs are reflect-padded before the forward pass,
-        and the model's output logits are cropped back to the original HxW.
-        
-    """
-    def __init__(self, base_model: nn.Module, pad: int = 16):
-        super().__init__()
-        self.base_model = base_model
-        self.pad = pad
-
-    def forward(self, x):
-        # x: [B, C, H, W]
-        B, C, H, W = x.shape
-        original_height = H
-        original_width = W
-    
-        if self.pad > 0:
-            x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode='reflect')
-        # logits from the base model (NO sigmoid here)
-        logits = self.base_model(x)
-        # Crop back to original HxW
-        if self.pad > 0:
-            logits = logits[:, :, self.pad:self.pad+H, self.pad:self.pad+W].contiguous()
-        return logits
-
-
-class WaterSegmentationDataset(Dataset):
-    def __init__(self, img_list, transform, img_bands_indx):
-        self.img_list = img_list
-        self.transform = transform
-        self.img_bands_indx = img_bands_indx
-
-        print(f"Loaded {len(self.img_list)} in-memory images")
-
-    def __len__(self):
-        return len(self.img_list)
-
-    def select_bands(self, img_hwc):
-        if self.img_bands_indx == None:
-            return img_hwc
-
-        if max(self.img_bands_indx) >= img_hwc.shape[2]:
-            raise ValueError(f"img_bands_indx {idxs} out of range for HWC image with C={a.shape[2]}")
-        img_hwc = img_hwc[..., self.img_bands_indx]
-
-        return img_hwc
-        
-    def __getitem__(self, indx):
-        # [C, H, W]
-        img_arr = self.img_list[indx].astype(np.float32)
-
-        if self.transform:
-            img_hwc = np.transpose(img_arr, (1, 2, 0))
-            img_hwc = self.select_bands(img_hwc)
-
-            transformed = self.transform(image=img_hwc)
-            img_out = transformed['image'] # [C, H, W]
-
-            if isinstance(img_out, torch.Tensor):
-                if img_out.ndim == 3:
-                    img = img_out.contiguous().float()
-            else:
-                img = torch.from_numpy(
-                    img_out.transpose(2, 0, 1) if img_out.ndim == 3 else img_out[np.newaxis, ...]
-                ).float()
-
-        else:
-            img = torch.from_numpy(img_arr).float()
-
-        return img
-    
     def analyze_water_coverage(self, prediction_array, pixel_size_meters=10):
         """
         Analyze water coverage from prediction array
@@ -939,6 +899,24 @@ class WaterSegmentationDataset(Dataset):
         }
         
         return statistics
+
+    def extract_geospatial_info(self, tiff_bytes):
+        """
+        Extract geospatial information from input TIFF imagery
+        
+        Args:
+            tiff_bytes: bytes data of the input TIFF file
+            
+        Returns:
+            tuple: (transform, crs) or (None, None) if no geospatial info available
+        """
+        try:
+            import io
+            with rasterio.open(io.BytesIO(tiff_bytes)) as src:
+                return src.transform, src.crs
+        except Exception:
+            # Return default values if extraction fails
+            return None, None
     
     def print_water_coverage_report(self, prediction_array, pixel_size_meters=10):
         """
@@ -969,6 +947,56 @@ class WaterSegmentationDataset(Dataset):
         print("="*50)
         
         return stats
+
+    def numpy_to_tiff_buffer(self, numpy_array, transform=None):
+        """
+        Convert numpy array to TIFF format in memory buffer
+        
+        Args:
+            numpy_array: 2D numpy array (H, W) for single band or 3D (C, H, W) for multi-band
+            transform: rasterio transform object (optional)
+        
+        Returns:
+            bytes: TIFF file as bytes buffer
+        """
+        # Handle both 2D and 3D arrays
+        if numpy_array.ndim == 2:
+            height, width = numpy_array.shape
+            count = 1
+            data_to_write = numpy_array
+        else:
+            count, height, width = numpy_array.shape
+            data_to_write = numpy_array
+        
+        # Default transform if none provided - using proper geospatial coordinates
+        if transform is None:
+            # Create a proper geotransform with 10m pixel resolution
+            # This assumes the image starts at (0, 0) with 10m pixel size
+            transform = from_origin(0, 0, 10, 10)
+        
+        # Create TIFF in memory with proper geospatial metadata
+        with MemoryFile() as memfile:
+            with memfile.open(
+                driver='GTiff',
+                height=height,
+                width=width,
+                count=count,
+                dtype=data_to_write.dtype,
+                transform=transform,
+                crs='EPSG:4326',  # WGS84 coordinate reference system
+                compress='lzw',   # Optional compression
+                tiled=True,       # Enable tiling for better performance
+                blockxsize=256,   # Tile size
+                blockysize=256
+            ) as dst:
+                if numpy_array.ndim == 2:
+                    dst.write(data_to_write, 1)
+                else:
+                    dst.write(data_to_write)
+            
+            # Return bytes buffer - need to read from memfile, not getvalue()
+            memfile.seek(0)  # Reset to beginning
+            return memfile.read()
         
     def predict(self , X):
         folder_link = X["folder_link"]  # Get the MinIO object path 
@@ -991,13 +1019,15 @@ class WaterSegmentationDataset(Dataset):
         s2 = tiff.imread(io.BytesIO(images["s2"]))  # Sentinel-2 image
         slope = tiff.imread(io.BytesIO(images["slope"]))  # Slope image
         
+        # Try to extract geospatial information from one of the input images
+        input_transform, input_crs = self.extract_geospatial_info(images["s2"])  # Use S2 as reference
+        
         # idx = 0 -> 7 bands: RGB + NIR + VV + VH + SLOPE
         # idx = 1 -> 9 bands: RGB + NIR + SWIR1 + SWIR2 + VV + VH + SLOPE
         
-        model_idx = 0
+        
 
         
-        model_prediction_model = WATER_PREDICTION(model_idx)
         
         # Transpose images to (C, H, W)
         s1 = np.transpose(s1, (2, 0, 1))
@@ -1005,13 +1035,22 @@ class WaterSegmentationDataset(Dataset):
         slope = slope[np.newaxis, ...]
         slope = np.transpose(slope, (0, 1, 2))
         
-        prediction_result = model_prediction_model.make_predictions(s1, s2, slope)
+        prediction_result = self.make_predictions(s1, s2, slope)
 
         # Analyze water coverage from the prediction result
         prediction_array = prediction_result[0] if isinstance(prediction_result, list) else prediction_result
         coverage_stats = self.print_water_coverage_report(prediction_array, pixel_size_meters=10)
 
-        tiff_buffer = self.numpy_to_tiff_buffer(prediction_array, transform=None)
+        # Use geospatial information from input imagery if available
+        if input_transform is not None:
+            prediction_transform = input_transform
+            print("✓ Using geospatial information from input imagery")
+        else:
+            # Fallback to default 10m resolution
+            prediction_transform = from_origin(0, 0, 10, 10)
+            print("⚠ No geospatial information found in input imagery, using default 10m resolution")
+        
+        tiff_buffer = self.numpy_to_tiff_buffer(prediction_array, transform=prediction_transform)
         
         # Add the prediction result to MinIO
         self.MinIOconnector.insert_object(
@@ -1040,3 +1079,81 @@ class WaterSegmentationDataset(Dataset):
         )
 
         return X
+
+
+
+class ReflectPadModel(nn.Module):
+    """
+        Wraps a segmentation model so that inputs are reflect-padded before the forward pass,
+        and the model's output logits are cropped back to the original HxW.
+        
+    """
+    def __init__(self, base_model: nn.Module, pad: int = 16):
+        super().__init__()
+        self.base_model = base_model
+        self.pad = pad
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        B, C, H, W = x.shape
+    
+        if self.pad > 0:
+            x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode='reflect')
+        # logits from the base model (NO sigmoid here)
+        logits = self.base_model(x)
+        # Crop back to original HxW
+        if self.pad > 0:
+            logits = logits[:, :, self.pad:self.pad+H, self.pad:self.pad+W].contiguous()
+        return logits
+
+class WaterSegmentationDataset(Dataset):
+    def __init__(self, img_list, transform, img_bands_indx):
+        self.img_list = img_list
+        self.transform = transform
+        self.img_bands_indx = img_bands_indx
+
+        print(f"Loaded {len(self.img_list)} in-memory images")
+
+    def __len__(self):
+        return len(self.img_list)
+
+    def select_bands(self, img_hwc):
+        if self.img_bands_indx is None:
+            return img_hwc
+
+        if max(self.img_bands_indx) >= img_hwc.shape[2]:
+            #TODO: Check correctness
+            raise ValueError(f"img_bands_indx {self.img_bands_indx} out of range for HWC image with C={img_hwc.shape[2]}")
+        img_hwc = img_hwc[..., self.img_bands_indx]
+
+        return img_hwc
+        
+    def __getitem__(self, indx):
+        # [C, H, W]
+        img_arr = self.img_list[indx].astype(np.float32)
+
+        if self.transform:
+            img_hwc = np.transpose(img_arr, (1, 2, 0))
+            img_hwc = self.select_bands(img_hwc)
+
+            transformed = self.transform(image=img_hwc)
+            img_out = transformed['image'] # [C, H, W]
+
+            if isinstance(img_out, torch.Tensor):
+                if img_out.ndim == 3:
+                    img = img_out.contiguous().float()
+                    
+                else:
+                    # Handle case where tensor doesn't have 3 dimensions
+                    img = img_out.float()
+            else:
+                img = torch.from_numpy(
+                    img_out.transpose(2, 0, 1) if img_out.ndim == 3 else img_out[np.newaxis, ...]
+                ).float()
+
+        else:
+            img = torch.from_numpy(img_arr).float()
+
+        #TODO: "img" is possibly unbound
+        return img
+    
