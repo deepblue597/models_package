@@ -8,6 +8,20 @@ class ModelSegmentation(ABC):
     
     This class provides a common interface for different segmentation models
     and handles connections to external services like MinIO, TimescaleDB, and Kafka.
+    
+    Attributes:
+        model_path (str): Path to the model file.
+        device (torch.device): Device to run the model on (CPU or GPU).
+        model_name (str): Name of the model.
+    Methods:
+        _create_model(): Abstract method to create the model architecture.
+        load_model(): Abstract method to load the model weights.
+        minIOConnection(): Connect to MinIO service.
+        timescaleConnection(): Connect to TimescaleDB service.
+        kafkaConnection(): Connect to Kafka service.
+        predict(): Abstract method to make predictions.
+        start_streaming(): Start streaming data from Kafka and process it.
+        disconnect_all(): Disconnect from all services.
     """
 
     def __init__(

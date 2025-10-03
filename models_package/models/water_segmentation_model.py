@@ -16,6 +16,42 @@ import tifffile as tiff
 from rasterio.io import MemoryFile
 
 class WaterSegmentationModel(ModelSegmentation):
+    """
+    Water Segmentation Model using U-Net architecture with EfficientNet-B0 encoder.
+    
+    This model supports multiple configurations based on different band combinations
+    from Sentinel-1, Sentinel-2, and slope data. The user can select from predefined
+    models that utilize different sets of input bands for water segmentation tasks.
+    Attributes:
+        model_path : str, optional
+                    Path to the trained model weights. If None, defaults to a predefined path.
+        model_name : str, optional
+                    Name of the model (default: "WaterSegmentationModel").
+        model_indx : int, optional
+                    Index to select which band combination model to use:
+                    0 - RGBNIRVVVHSLOPE (7 bands)
+                    1 - RGBNIRSWIR1SWIR2VVVHSLOPE (9 bands)
+                    Default is 0.
+    NOTE: If model_path is None, the class will use model_indx to determine which default model to load.
+    
+    Methods:
+        _create_model() : Builds a list of model configurations.
+        load_model()    : Loads the model weights from the specified path.
+        split_tiff_s1() : Splits Sentinel-1 data into smaller tiles.
+        split_tiff_s2() : Splits Sentinel-2 data into smaller tiles.
+        split_tiff_slope(): Splits slope data into smaller tiles.
+        read_bands()    : Extracts specific bands from multi-band images.
+        normalize_concatenated_data(): Normalizes combined Sentinel-1, Sentinel-2, and slope data.
+        split_tiff_s1s2(): Combines Sentinel-1, Sentinel-2, and slope data into a single tensor.
+        split_images()  : Splits and combines s1, s2, and slope data into full band images.
+        make_images()   : Reconstructs full-size images from smaller prediction tiles.
+        final_image()   : Reconstructs the final image from tiles and saves to disk if needed.
+        split_final_image(): Splits a full image into smaller tiles.
+        make_predictions(): Combines input data and makes predictions using the selected model.
+        resize_to_normal_predictions(): Resizes predictions back to original tile sizes.
+        save_binary_predictions(): Runs inference and saves binary mask predictions.
+    
+    """
     def __init__(
         self,
         model_path=None,
