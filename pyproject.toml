@@ -61,5 +61,6 @@ packages = ["models_package"]
 [dependency-groups]
 dev = [
     "build>=1.3.0",
+    "ruff>=0.13.3",
     "twine>=6.2.0",
 ]

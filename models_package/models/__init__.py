@@ -5,11 +5,15 @@ Models package - A collection of segmentation models for water and river detecti
 from .abstract_model import ModelSegmentation
 from .water_segmentation_model import WaterSegmentationModel
 from .river_segmentation_model import RiverSegmentationModel
+from .segmentation_context import SegmentationContext
+from .response_models import PredictionResult
 
 __all__ = [
     "ModelSegmentation",
-    "WaterSegmentationModel", 
+    "WaterSegmentationModel",
     "RiverSegmentationModel",
+    "SegmentationContext",
+    "PredictionResult"
 ]
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

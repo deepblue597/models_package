@@ -6,7 +6,8 @@ import os
 import segmentation_models_pytorch as smp
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from .abstract_model import ModelSegmentation
+from .abstract_model import ImageData, ModelSegmentation, Prediction
+from .response_models import PredictionResult
 
 class RiverSegmentationModel(ModelSegmentation):
     """
@@ -46,7 +47,7 @@ class RiverSegmentationModel(ModelSegmentation):
         model_architecture="unetplusplus",
         encoder_name="efficientnet-b3",
         encoder_weights="imagenet",
-    ):  
+    ):
         super().__init__(model_path=model_path, model_name=model_name)
         self.input_size = input_size
         self.mean = mean
@@ -100,7 +101,7 @@ class RiverSegmentationModel(ModelSegmentation):
     def load_model(self):
         if os.path.exists(self.model_path):
             checkpoint = torch.load(self.model_path, map_location=self.device)
-                
+
             self.model.load_state_dict(checkpoint["state_dict"])
 
             self.model.to(self.device)
@@ -125,28 +126,19 @@ class RiverSegmentationModel(ModelSegmentation):
             ]
         )
 
+    def predict(self, image_data:ImageData) -> Prediction:
 
-    def predict(self, X):
-        image_link = X["image_link"]  # Get the MinIO object path
-        
-        try:
-            # Get image data from MinIO using the object path
-            image_bytes = self.MinIOconnector.get_object(image_link)
-            
-            # Decode the image bytes to a numpy array
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if not isinstance(image_data, bytes):
+            raise TypeError("RiverSegmentationModel expects image_data as bytes")
+        # Decode the image bytes to a numpy array
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            if image is None:
-                print(f"Error: Could not decode image from MinIO object: {image_link}")
-                return None
+        if image is None:
+            raise ValueError("Could not decode image")
 
-            # Convert BGR to RGB
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-        except Exception as e:
-            print(f"Error retrieving image from MinIO: {str(e)}")
-            return None
+        # Convert BGR to RGB
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         original_image = cv2.resize(image, self.input_size)
         # Apply transformations
@@ -177,29 +169,14 @@ class RiverSegmentationModel(ModelSegmentation):
             original_encoded = cv2.imencode(
                 ".png", cv2.cvtColor(original_image, cv2.COLOR_RGB2BGR)
             )[1].tobytes()
-            self.MinIOconnector.insert_object(
-                object_name=f"originals/{X['filename']}",
-                data=original_encoded,
-                content_type="image/png",
-            )
+
 
             # Encode prediction mask as PNG bytes
             encoded_mask = cv2.imencode(".png", prediction_mask * 255)[1].tobytes()
-            self.MinIOconnector.insert_object(
-                object_name=f"predictions/{X['filename']}",
-                data=encoded_mask,
-                content_type="image/png",
-            )
 
-            # Encode confidence map as PNG bytes
             encoded_confidence = cv2.imencode(
                 ".png", (confidence_map * 255).astype(np.uint8)
             )[1].tobytes()
-            self.MinIOconnector.insert_object(
-                object_name=f"confidence_maps/{X['filename']}",
-                data=encoded_confidence,
-                content_type="image/png",
-            )
 
             # Create overlay image with proper water highlighting
             overlay_image = original_image.copy().astype(np.float32)  # RGB format
@@ -224,47 +201,37 @@ class RiverSegmentationModel(ModelSegmentation):
                 overlay_image.astype(np.uint8), cv2.COLOR_RGB2BGR
             )
 
-            encoded_image = cv2.imencode(".png", overlay_bgr)[1].tobytes()
+            overlay_output_image = cv2.imencode(".png", overlay_bgr)[1].tobytes()
 
-            self.MinIOconnector.insert_object(
-                object_name=f"overlay/{X['filename']}",
-                data=encoded_image,
-                content_type="image/png",
-            )
-
-            self.TimescaleDBconnector.insert_data(
-                table_name=self.table,
-                data={
-                    "timestamp": datetime.now(),
-                    "model_name": self.model_name,
-                    "filename": X["filename"],
-                    "water_coverage": float(water_percentage),
-                    "avg_confidence": float(avg_confidence),
-                    "overflow_detected": overflow_flag,
-                    "location": X.get(
-                        "location", "unknown"
-                    ),  # Use .get() to safely access location
-                },
-            )
         except Exception as e:
             print(f"Error during prediction: {str(e)}")
             return None
-        return {
-            "filename": X["filename"],
-            "water_coverage": water_percentage,
-            "avg_confidence": avg_confidence,
-            "overflow_flag": overflow_flag,
-            "confidence_map": confidence_map,
-            "prediction_mask": prediction_mask,
-            "overlay_image": encoded_image,
-        }
+
+        output = PredictionResult(
+            start_time=datetime.now(),
+            model_name=self.model_name,
+            prediction_mask=encoded_mask,
+            elapsed_time=None,
+            statistics={
+                "water_coverage": water_percentage,
+                "avg_confidence": avg_confidence,
+                "overflow_flag": overflow_flag,
+            },
+            extras={
+                "original_image": original_encoded,
+                "encoded_confidence": encoded_confidence,
+                "overlay_image": overlay_output_image,
+            },
+            
+        )
+        return output
 
     def __str__(self):
-        return (f"RiverSegmentationModel("
-                f"model_name={self.model_name}, "
-                f"model_path={self.model_path}, "
-                f"architecture={self.model_architecture}, "
-                f"encoder={self.encoder_name}, "
-                f"device={self.device})")
-
-
+        return (
+            f"RiverSegmentationModel("
+            f"model_name={self.model_name}, "
+            f"model_path={self.model_path}, "
+            f"architecture={self.model_architecture}, "
+            f"encoder={self.encoder_name}, "
+            f"device={self.device})"
+        )
